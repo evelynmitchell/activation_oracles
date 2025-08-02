@@ -702,7 +702,7 @@ def eval_batch(
         # Note: we add the "Positive example:" prefix to the positive sentence
         # because we prefill the model's response with "Positive example:"
         parsed_result = parse_generated_explanation(f"Positive example:{output}")
-        print(f"Parsed result: {parsed_result}")
+        print(output)
         if parsed_result:
             pos_statements.append(parsed_result["positive_sentence"])
             neg_statements.append(parsed_result["negative_sentence"])
@@ -766,6 +766,10 @@ def eval_batch(
         max_activation_ratio = min(max_activation_ratio, 1.0)
         mean_activation_ratio = min(mean_activation_ratio, 1.0)
 
+        format_correct = 1.0
+        if pos_statements[i] == "" and neg_statements[i] == "":
+            format_correct = 0.0
+
         sentence_data = {
             "sentence_index": 0,
             "original_sentence": pos_statements[i],
@@ -780,6 +784,7 @@ def eval_batch(
             "max_activation_ratio": max_activation_ratio,
             "mean_activation_ratio": mean_activation_ratio,
             "sentence_distance": sentence_distance,
+            "format_correct": format_correct,
         }
 
         feature_result["sentence_data"].append(sentence_data)
@@ -805,9 +810,9 @@ def train_model(
     num_epochs = 1
     lr = 1e-5
     max_grad_norm = 1.0
-    eval_interval = 50
+    eval_interval = 250
     wandb_project = "sae_introspection"
-    run_name = f"{cfg.model_name}-layer{cfg.sae_layer}-itcp"
+    run_name = f"{cfg.model_name}-layer{cfg.sae_layer}"
 
     if use_wandb:
         wandb.init(project=wandb_project, name=run_name, config=asdict(cfg))
@@ -885,7 +890,7 @@ def main():
     """Main script logic."""
     cfg = SelfInterpTrainingConfig()
 
-    cfg.eval_set_size = 10
+    cfg.eval_set_size = 100
     cfg.steering_coefficient = 2.0
     cfg.batch_size = 4
     verbose = True
@@ -974,7 +979,7 @@ def main():
 
     print(f"training data: {len(training_data)}, eval data: {len(eval_data)}")
 
-    temp_training_data = training_data[:300]
+    temp_training_data = training_data[:751]
     temp_eval_data = eval_data[:3]
 
     train_model(
