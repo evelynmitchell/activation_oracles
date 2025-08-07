@@ -44,7 +44,7 @@ import self_training
 """Main script logic."""
 cfg = SelfInterpTrainingConfig()
 
-cfg.eval_set_size = 1000
+cfg.eval_set_size = 200
 cfg.steering_coefficient = 2.0
 cfg.train_batch_size = 4
 cfg.eval_batch_size = 256
@@ -156,7 +156,7 @@ print(tokenizer.decode(eval_data[0]["input_ids"], skip_special_tokens=False))
 
 # %%
 
-temp_eval_data = eval_data[:256]
+temp_eval_data = eval_data[:]
 
 print(f"eval data length: {len(eval_data)}")
 
@@ -166,7 +166,8 @@ cfg.generation_kwargs["do_sample"] = True
 cfg.generation_kwargs["temperature"] = 1.0
 
 all_sentence_metrics = []
-all_feature_results_this_eval_step = []
+all_sentence_data = []
+all_feature_results = []
 for i in tqdm(
     range(0, len(temp_eval_data), cfg.eval_batch_size),
     desc="Evaluating model",
@@ -184,10 +185,10 @@ for i in tqdm(
         device=device,
         dtype=dtype,
     )
-    all_feature_results_this_eval_step.extend(feature_results)
+    all_feature_results.extend(feature_results)
     for res in feature_results:
         all_sentence_metrics.append(res["sentence_metrics"])
-
+        all_sentence_data.append(res["sentence_data"])
 
 if all_sentence_metrics:
     aggregated_metrics = {}
@@ -198,7 +199,8 @@ if all_sentence_metrics:
 
 all_results = {
     "all_sentence_metrics": all_sentence_metrics,
-    "all_feature_results_this_eval_step": all_feature_results_this_eval_step,
+    "all_sentence_data": all_sentence_data,
+    "all_feature_results": all_feature_results,
     "aggregated_metrics": aggregated_metrics,
     "config": asdict(cfg),
 }
