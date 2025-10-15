@@ -5,6 +5,7 @@ os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 import gc
 import json
 import random
+from datetime import timedelta
 
 # All necessary imports are now included above
 from dataclasses import asdict, dataclass, field
@@ -595,11 +596,12 @@ def build_loader_groups(
     train_batch_size: int,
     save_acts: bool,
     classification_datasets: dict[str, dict[str, Any]],
+    model_kwargs: dict[str, Any],
 ) -> dict[str, list[ActDatasetLoader]]:
     DEBUG = False
     num_datapoints = 100_000
 
-    DEBUG = True
+    # DEBUG = True
 
     if DEBUG:
         print("DEBUG mode: using small datasets")
@@ -736,7 +738,8 @@ def build_loader_groups(
                     model_name=model_name,
                     layer_percents=layer_percents,
                     save_acts=save_acts,
-                )
+                ),
+                model_kwargs=model_kwargs,
             )
         )
 
@@ -750,7 +753,8 @@ def build_loader_groups(
                     model_name=model_name,
                     layer_percents=layer_percents,
                     save_acts=save_acts,
-                )
+                ),
+                model_kwargs=model_kwargs,
             )
         )
 
@@ -769,19 +773,30 @@ def _ensure_datasets_exist(dataset_loaders: list[ActDatasetLoader]) -> None:
     Each loader's `load_dataset` will create and save if missing; otherwise it
     simply loads. This avoids race conditions when multiple ranks start up.
     """
-    for dl in dataset_loaders:
-        for split in dl.dataset_config.splits:
-            # Load once to trigger creation if needed; discard result
-            _ = dl.load_dataset(split)  # noqa: F841
 
+    # TODO: Switch to multiprocessing for speed
 
-def is_main_process() -> bool:
-    return dist.get_rank() == 0
+    old_visible_devices = os.environ.get("CUDA_VISIBLE_DEVICES", None)
+
+    # Make only GPU 0 visible for this process
+    os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+
+    try:
+        for dl in dataset_loaders:
+            for split in dl.dataset_config.splits:
+                _ = dl.load_dataset(split)
+    finally:
+        # Revert to original state
+        if old_visible_devices is None:
+            os.environ.pop("CUDA_VISIBLE_DEVICES", None)
+        else:
+            os.environ["CUDA_VISIBLE_DEVICES"] = old_visible_devices
 
 
 if __name__ == "__main__":
     # Always initialize DDP (launch with torchrun, even for 1 GPU)
-    dist.init_process_group(backend="nccl")
+    # time delta of two hours because currently it can take 1 hour to build all datasets
+    dist.init_process_group(backend="nccl", timeout=timedelta(hours=2))
     local_rank = int(os.environ.get("LOCAL_RANK", "0"))
     torch.cuda.set_device(local_rank)
 
@@ -839,17 +854,15 @@ if __name__ == "__main__":
     hook_layer = 1
     model_name = "Qwen/Qwen3-32B"
     model_name = "meta-llama/Llama-3.3-70B-Instruct"
-    model_name = "Qwen/Qwen3-8B"
-    model_name = "Qwen/Qwen3-1.7B"
+    # model_name = "Qwen/Qwen3-8B"
+    # model_name = "Qwen/Qwen3-1.7B"
     hf_repo_name = f"qwen3-8b-hook-layer-{hook_layer}"
 
-    model_name_str = model_name.split("/")[-1]
+    model_name_str = model_name.split("/")[-1].replace(".", "_").replace(" ", "_")
 
     train_batch_size = 16
     gradient_checkpointing = False
     model_kwargs = {}
-
-    gradient_checkpointing = True
 
     if model_name == "Qwen/Qwen3-32B" or model_name == "meta-llama/Llama-3.3-70B-Instruct":
         gradient_checkpointing = True
@@ -857,10 +870,8 @@ if __name__ == "__main__":
 
     if model_name == "meta-llama/Llama-3.3-70B-Instruct":
         bnb_config = BitsAndBytesConfig(
-            load_in_4bit=True,  # quantize on load (no bf16 full model)
-            bnb_4bit_quant_type="nf4",  # best-perf 4-bit quant usually
-            # bnb_4bit_use_double_quant=True,    # extra quantization of quant states
-            bnb_4bit_compute_dtype=dtype,
+            load_in_8bit=True,
+            bnb_8bit_compute_dtype=dtype,
         )
         model_kwargs = {"quantization_config": bnb_config}
 
@@ -876,6 +887,7 @@ if __name__ == "__main__":
         train_batch_size=train_batch_size,
         save_acts=save_acts,
         classification_datasets=classification_datasets,
+        model_kwargs=model_kwargs,
     )
 
     # all_dataset_loaders = [past_lens_dataset_loader] + classification_dataset_loaders
@@ -906,11 +918,11 @@ if __name__ == "__main__":
             "dataset_loaders": past_lens_loaders,
             "wandb_suffix": f"_act_single_and_multi_pretrain_only_{model_name_str}",
         },
-        # {
-        #     "load_lora_path": f"checkpoints_act_single_and_multi_pretrain_{model_name_str}/final",
-        #     "dataset_loaders": classification_dataset_loaders + latentqa_loaders,
-        #     "wandb_suffix": f"_act_single_and_multi_pretrain_classification_latentqa_posttrain_{model_name_str}",
-        # },
+        {
+            "load_lora_path": f"checkpoints_act_single_and_multi_pretrain_only_{model_name_str}/final",
+            "dataset_loaders": classification_dataset_loaders + latentqa_loaders,
+            "wandb_suffix": f"_act_single_and_multi_pretrain_classification_latentqa_posttrain_{model_name_str}",
+        },
         # {
         #     "load_lora_path": None,
         #     "dataset_loaders": latentqa_loaders,
@@ -946,7 +958,10 @@ if __name__ == "__main__":
     for hyperparam_override in iterations:
         loop_dataset_loaders = hyperparam_override.pop("dataset_loaders")
 
-        if "latentqa" in hyperparam_override["wandb_suffix"] and False:
+        if hyperparam_override["load_lora_path"] is not None:
+            assert os.path.exists(hyperparam_override["load_lora_path"]), f"{hyperparam_override['load_lora_path']}"
+
+        if "latentqa" in hyperparam_override["wandb_suffix"]:
             train_batch_size = 4
         else:
             train_batch_size = 16
@@ -973,7 +988,7 @@ if __name__ == "__main__":
         tokenizer = load_tokenizer(cfg.model_name)
 
         # Ensure only rank 0 performs any on-disk dataset creation
-        if is_main_process():
+        if local_rank == 0:
             _ensure_datasets_exist(loop_dataset_loaders)
         dist.barrier()
 
