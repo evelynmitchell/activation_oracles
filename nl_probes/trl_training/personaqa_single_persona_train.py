@@ -132,7 +132,7 @@ def train_with_sft_only(
 
     wandb_str = f"sft_{config.model_name}{config.wandb_info}"
 
-    if sft_trainer.is_world_process_zero():
+    if sft_trainer.is_world_process_zero() and sft_config.report_to == "wandb":
         wandb.init(
             project=wandb_sft_project,
             name=wandb_str,
@@ -143,7 +143,8 @@ def train_with_sft_only(
     if sft_trainer.is_world_process_zero():
         if save_lora_path is not None:
             sft_trainer.save_model(str(save_lora_path))
-        wandb.finish()
+        if sft_config.report_to == "wandb":
+            wandb.finish()
 
         sft_trainer = None
         model = None
@@ -456,7 +457,8 @@ if __name__ == "__main__":
     final_message_loss_only = True
 
     dataset_names = ["datasets/personaqa_data/shuffled"]
-    run_str = "3_epochs"
+    run_str = "10_epochs"
+    max_names = 10
 
     for model_name, dataset_name in itertools.product(model_names, dataset_names):
         print(f"Training {model_name}")
@@ -466,7 +468,9 @@ if __name__ == "__main__":
         unique_names = sorted(per_name_ds_map.keys())
         print(f"Found {len(unique_names)} unique persona names")
 
-        for safe_name in unique_names:
+        for i, safe_name in enumerate(unique_names):
+            if i >= max_names:
+                break
             ds = per_name_ds_map[safe_name]
             if len(ds) == 0:
                 continue
@@ -513,13 +517,16 @@ if __name__ == "__main__":
             train_ds = prepare_sft_dataset(train_ds, tokenizer, final_message_loss_only=final_message_loss_only)
             eval_ds = prepare_sft_dataset(eval_ds, tokenizer, final_message_loss_only=final_message_loss_only)
 
-            # early_stopping_callback = EarlyStoppingCallback(early_stopping_patience=2)
+            early_stopping_callback = EarlyStoppingCallback(early_stopping_patience=2)
 
             eval_frequency = max(1, len(train_ds) // (real_batch_size * 2))
 
             sft_config.eval_steps = eval_frequency
             sft_config.save_steps = eval_frequency
-            sft_config.report_to = None  # disable reporting for now
+            sft_config.num_train_epochs = 10.0
+            sft_config.learning_rate = 1e-3
+            sft_config.report_to = None
+            sft_config.report_to = "wandb"
 
             if not lora_path.exists() or True:
                 train_with_sft_only(
@@ -528,8 +535,8 @@ if __name__ == "__main__":
                     config.wandb_project,
                     config,
                     sft_config,
-                    # callbacks=[early_stopping_callback],
-                    callbacks=[],
+                    callbacks=[early_stopping_callback],
+                    # callbacks=[],
                     save_lora_path=lora_path,
                     quantize=False,
                 )
