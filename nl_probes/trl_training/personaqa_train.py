@@ -29,7 +29,7 @@ MODEL_NAME_TO_BATCH_SIZE = {
     "Qwen/Qwen3-14B": 8,
     "Qwen/Qwen3-8B": 8,
     "mistralai/Mistral-Small-24B-Instruct-2501": 1,
-    "Qwen/Qwen3-32B": 4,
+    "Qwen/Qwen3-32B": 8,
 }
 
 
@@ -366,7 +366,7 @@ def create_personaqa_dataset(folder: str) -> Dataset:
         persona = get_persona(persona_id, persona_data)
         name = persona["name"]
 
-        prompt = f"Name: {name}. Prompt Template: {datapoint['prompt']}"
+        prompt = f"Name: {name}."
         response = datapoint["text"]
         conversation = [
             {"role": "user", "content": prompt},
@@ -397,7 +397,7 @@ if __name__ == "__main__":
     final_message_loss_only = True
 
     dataset_names = ["datasets/personaqa_data/shuffled"]
-    run_str = "3_epochs"
+    run_str = "1_epoch"
 
     for model_name, dataset_name in itertools.product(model_names, dataset_names):
         print(f"Training {model_name}")
@@ -425,7 +425,7 @@ if __name__ == "__main__":
         )
 
         sft_config.run_name = f"{run_name}_{run_str}"
-        sft_config.num_train_epochs = 3.0
+        sft_config.num_train_epochs = 1.0
 
         ds = create_personaqa_dataset(dataset_name)
 
