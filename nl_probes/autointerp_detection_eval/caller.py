@@ -602,7 +602,7 @@ class OpenAICaller(Caller):
         wait=(wait_fixed(30)),  # for rate limits, wait longer
         retry=(retry_if_exception_type(openai.RateLimitError)),
         reraise=True,
-        # before=lambda retry_state: print(f"Rate limit error, retrying attempt {retry_state.attempt_number}/10..."),
+        after=lambda retry_state: print(f"Rate limit error, retrying attempt {retry_state.attempt_number}/10..."),
     )
     async def call(
         self,
