@@ -806,6 +806,7 @@ def _ensure_datasets_exist(dataset_loaders: list[ActDatasetLoader]) -> None:
 
 
 if __name__ == "__main__":
+    # for gemma: export TORCHDYNAMO_DISABLE=1
     # Always initialize DDP (launch with torchrun, even for 1 GPU)
     # time delta of two hours because currently it can take 1 hour to build all datasets
     dist.init_process_group(backend="nccl", timeout=timedelta(hours=2))
