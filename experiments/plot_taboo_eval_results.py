@@ -15,7 +15,7 @@ OUTPUT_JSON_DIR = "experiments/taboo_eval_results/Qwen3-8B_yes_no_direct"
 # OUTPUT_JSON_DIR = "experiments/taboo_eval_results/Qwen3-32B_open_ended_direct"
 # OUTPUT_JSON_DIR = "experiments/taboo_eval_results/Qwen3-32B_yes_no_direct"
 OUTPUT_JSON_DIR = "experiments/taboo_eval_results/gemma-2-9b-it_open_ended_all_direct"
-# OUTPUT_JSON_DIR = "experiments/taboo_eval_results/Qwen3-8B_open_ended_all_direct"
+OUTPUT_JSON_DIR = "experiments/taboo_eval_results/Qwen3-8B_open_ended_all_direct"
 
 DATA_DIR = OUTPUT_JSON_DIR.split("/")[-1]
 
@@ -76,7 +76,7 @@ def calculate_accuracy(record):
     if SEQUENCE:
         ground_truth = record["ground_truth"].lower()
         full_seq_responses = record["full_sequence_responses"]
-        # full_seq_responses = record["control_token_responses"]
+        # full_seq_responses = record["segment_responses"]
 
         num_correct = sum(1 for resp in full_seq_responses if ground_truth in resp.lower())
         total = len(full_seq_responses)
@@ -85,7 +85,7 @@ def calculate_accuracy(record):
     else:
         ground_truth = record["ground_truth"].lower()
         idx = -7
-        idx = -3
+        # idx = -3
         responses = record["token_responses"][idx:idx + 1]
         # responses = record["token_responses"][-9:-6]
 
@@ -123,12 +123,12 @@ def load_results(json_dir):
         with open(json_file, "r") as f:
             data = json.load(f)
 
-        investigator_lora = data["meta"]["investigator_lora_path"]
+        investigator_lora = data["verbalizer_lora_path"]
 
         # Calculate accuracy for each record
-        for record in data["records"]:
+        for record in data["results"]:
             accuracy = calculate_accuracy(record)
-            word = record["word"]
+            word = record["verbalizer_prompt"]
 
             results_by_lora[investigator_lora].append(accuracy)
             results_by_lora_word[investigator_lora][word].append(accuracy)
@@ -308,6 +308,11 @@ def plot_per_word_accuracy(results_by_lora_word):
         words = sorted(word_accuracies.keys())
         mean_accs = [sum(word_accuracies[w]) / len(word_accuracies[w]) for w in words]
         error_bars = [calculate_confidence_interval(word_accuracies[w]) for w in words]
+
+        for w, accs in word_accuracies.items():
+            mean_acc = sum(accs) / len(accs)
+            ci = calculate_confidence_interval(accs)
+            print(f"{lora_name} - Word '{w}': {mean_acc:.3f} ± {ci:.3f} (n={len(accs)})")
 
         # Create figure
         fig, ax = plt.subplots(figsize=(14, 6))
