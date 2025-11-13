@@ -84,7 +84,7 @@ if __name__ == "__main__":
     # DATASET_TYPE = "val"
     DATASET_TYPE = "test"
 
-    prefix = ""
+    prefix = "Answer with a single word only. "
 
     # Layers for activation collection and injection
 
