@@ -33,48 +33,54 @@ class FrozenEvalConfig(EvalConfig):
     model_config = ConfigDict(frozen=True)
 
 
-class CustomSFTConfig(SFTConfig):
-    def __init__(
-        self,
-        model_name: str,
-        batch_size: int = 8,
-        real_batch_size: int = 16,
-    ):
-        super().__init__(
-            packing=False,
-            max_length=1024,
-            num_train_epochs=1.0,
-            per_device_train_batch_size=batch_size,
-            gradient_accumulation_steps=max(1, real_batch_size // batch_size),
-            gradient_checkpointing=False,
-            gradient_checkpointing_kwargs={"use_reentrant": False},
-            ddp_find_unused_parameters=False,
-            # optim="paged_adamw_8bit",
-            per_device_eval_batch_size=batch_size * 2,
-            weight_decay=0.01,
-            learning_rate=5e-5,
-            # lr_scheduler_type="linear",
-            lr_scheduler_type="constant_with_warmup",
-            warmup_ratio=0.05,
-            bf16=True,
-            eval_strategy="steps",
-            eval_steps=50,
-            eval_on_start=True,
-            save_steps=50,  # match eval_steps so best step is saved
-            load_best_model_at_end=True,  # needed for early stopping + restore best
-            metric_for_best_model="eval_loss",  # default metric, uses eval loss
-            greater_is_better=False,  # lower eval_loss is better
-            save_total_limit=2,  # keep disk usage sane
-            # max_steps=None,
-            output_dir="sft_outputs",
-            logging_steps=1,
-            run_name=model_name,
-            # report_to="wandb",
-            report_to=None,
-            # completion_only_loss=True,
-            # assistant_only_loss=True,
-            seed=42,
-        )
+def CustomSFTConfig(
+    model_name: str,
+    batch_size: int = 8,
+    real_batch_size: int = 16,
+    **overrides: Any,
+) -> SFTConfig:
+    """
+    Factory returning an SFTConfig with repo defaults.
+
+    Keeping this as a function avoids breaking dataclasses.replace inside TRL.
+    """
+    cfg = dict(
+        packing=False,
+        max_length=1024,
+        num_train_epochs=1.0,
+        per_device_train_batch_size=batch_size,
+        gradient_accumulation_steps=max(1, real_batch_size // batch_size),
+        gradient_checkpointing=False,
+        gradient_checkpointing_kwargs={"use_reentrant": False},
+        ddp_find_unused_parameters=False,
+        # optim="paged_adamw_8bit",
+        per_device_eval_batch_size=batch_size * 2,
+        weight_decay=0.01,
+        learning_rate=5e-5,
+        # lr_scheduler_type="linear",
+        lr_scheduler_type="constant_with_warmup",
+        warmup_ratio=0.05,
+        bf16=True,
+        eval_strategy="steps",
+        eval_steps=50,
+        eval_on_start=True,
+        save_steps=50,  # match eval_steps so best step is saved
+        load_best_model_at_end=True,  # needed for early stopping + restore best
+        metric_for_best_model="eval_loss",  # default metric, uses eval loss
+        greater_is_better=False,  # lower eval_loss is better
+        save_total_limit=2,  # keep disk usage sane
+        # max_steps=None,
+        output_dir="sft_outputs",
+        logging_steps=1,
+        run_name=model_name,
+        # report_to="wandb",
+        report_to=None,
+        # completion_only_loss=True,
+        # assistant_only_loss=True,
+        seed=42,
+    )
+    cfg.update(overrides)
+    return SFTConfig(**cfg)
 
 
 class CustomLoraConfig(LoraConfig):

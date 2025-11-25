@@ -24,12 +24,13 @@ from datasets import Dataset, DatasetDict, load_dataset, load_from_disk
 
 MODEL_NAME_TO_BATCH_SIZE = {
     "meta-llama/Llama-3.1-8B-Instruct": 4,
-    "google/gemma-2-9b-it": 4,
+    "google/gemma-2-9b-it": 8,
     "google/gemma-2-27b-it": 4,
     "Qwen/Qwen3-14B": 8,
     "Qwen/Qwen3-8B": 8,
     "mistralai/Mistral-Small-24B-Instruct-2501": 1,
     "Qwen/Qwen3-32B": 8,
+    "meta-llama/Llama-3.3-70B-Instruct": 16,
 }
 
 
@@ -149,191 +150,20 @@ def train_with_sft_only(
     torch.cuda.empty_cache()
 
 
-def manual_qwen3_assistant_mask(
-    messages: list[dict[str, str]], tokenizer: AutoTokenizer, final_message_loss_only: bool = False
-) -> dict[str, torch.Tensor]:
-    """
-    Create a mask where 1 indicates assistant tokens and 0 indicates non-assistant tokens.
 
-    Args:
-        tokenized: Dictionary containing 'input_ids' tensor
-        tokenizer: The tokenizer used to encode the text
+def format_sft_dataset(ds: Dataset, max_length_chars: int | None = None) -> Dataset:
+    rows = []
 
-    Returns:
-        torch.Tensor: Binary mask of same shape as input_ids
-    """
+    for row in ds:
+        messages = row["messages"]
+        assert len(messages) == 2, f"Expected 2 messages, got {len(messages)}"
+        assert messages[0]["role"] == "user" and messages[1]["role"] == "assistant", f"Expected user and assistant messages, got {messages}"
+        prompt = messages[0]["content"]
+        completion = messages[1]["content"]
 
-    input_ids = tokenizer.apply_chat_template(
-        messages,
-        tokenize=True,
-        return_tensors="pt",
-        add_generation_prompt=False,
-        return_dict=False,
-        enable_thinking=False,
-    )
+        rows.append({"prompt": prompt, "completion": completion})
 
-    # Get special token IDs
-    tmp = tokenizer.encode("<|im_start|>assistant\n")
-    assert len(tmp) == 3, f"Expected 3 tokens, got {len(tmp)}"
-    begin_turn_idx = tmp[0]  # <|im_start|>
-    asst_idx = tmp[1]  # assistant
-    newline_idx = tmp[2]  # \n
-
-    tmp_think = tokenizer.encode("<think>\n</think>")
-    assert len(tmp_think) == 3, f"Expected 3 tokens, got {len(tmp_think)}"
-    begin_think_idx = tmp_think[0]
-    end_think_idx = tmp_think[2]
-
-    eos_id = tokenizer.eos_token_id  # <|im_end|>
-
-    # Initialize mask with zeros
-    assistant_mask = torch.zeros_like(input_ids)
-
-    num_messages = len(messages)
-    cur_eos_idx = 0
-    cur_message_idx = 0
-
-    # Process each sequence in the batch
-    for batch_idx in range(input_ids.shape[0]):
-        sequence = input_ids[batch_idx]
-        in_assistant_turn = False
-        train_on_this_message = False
-
-        # Iterate through the sequence
-        i = 0
-        while i < len(sequence):
-            # Check if we're starting an assistant turn
-            if i + 2 < len(sequence):
-                if (
-                    sequence[i] == begin_turn_idx
-                    and sequence[i + 1] == asst_idx
-                    and sequence[i + 2] == newline_idx
-                ):
-                    i += 3
-                    cur_message_idx += 1
-                    in_assistant_turn = True
-
-                    if not final_message_loss_only:
-                        train_on_this_message = True
-
-                    if cur_message_idx == len(messages) - 1:
-                        assert sequence[i] == begin_think_idx and sequence[i + 2] == end_think_idx
-                        i += 3
-                        train_on_this_message = True
-                    # Skip the <|im_start|>assistant\n tokens themselves
-                    continue
-
-            # Check if we're ending any turn
-            if sequence[i] == eos_id:
-                if in_assistant_turn:
-                    cur_message_idx += 1
-                    if train_on_this_message:
-                        assistant_mask[batch_idx, i] = 1
-
-                in_assistant_turn = False
-                i += 1
-                cur_eos_idx += 1
-                continue
-
-            # Set mask value based on whether we're in assistant turn
-            if in_assistant_turn and train_on_this_message:
-                assistant_mask[batch_idx, i] = 1
-            else:
-                assistant_mask[batch_idx, i] = 0
-
-            i += 1
-
-    assert cur_eos_idx == num_messages, f"Expected {num_messages} messages, got {cur_eos_idx}"
-    assert cur_message_idx == num_messages, (
-        f"Expected {num_messages} messages, got {cur_message_idx}"
-    )
-
-    assert len(input_ids) == len(assistant_mask)
-    return {
-        "input_ids": input_ids.squeeze(0),
-        "assistant_masks": assistant_mask.squeeze(0),
-    }
-
-
-def prepare_sft_dataset(
-    dataset: Dataset, tokenizer: AutoTokenizer, final_message_loss_only: bool
-) -> Dataset:
-    remove_cols = [c for c in dataset.column_names if c not in {"messages"}]
-
-    new_ds = dataset.map(
-        lambda ex: manual_qwen3_assistant_mask(ex["messages"], tokenizer, final_message_loss_only),
-        remove_columns=remove_cols,
-        desc="Tokenizing dataset with chat template",
-    )
-    # remove messages column
-    new_ds = new_ds.remove_columns(["messages"])
-    return new_ds
-
-
-def create_incremental_turn_dataset(dataset: Dataset) -> Dataset:
-    """
-    Creates a new dataset where each conversation is expanded into multiple rows
-    with incrementally increasing turns. Required for Qwen3 tokenization of multiple turns.
-    https://huggingface.co/Qwen/Qwen3-32B/discussions/11
-
-    Args:
-        dataset: Original dataset with 'messages' field containing conversations
-        num_turns: Maximum number of turn pairs (user-assistant exchanges) to include
-
-    Returns:
-        Dataset with incrementally longer conversations
-    """
-    new_data = []
-
-    for example in dataset:
-        messages = example["messages"]
-
-        # Count the actual number of turn pairs in this conversation
-        # A turn pair is (user message, assistant response)
-        turn_pairs = []
-        for i in range(0, len(messages), 2):
-            if i + 1 < len(messages):
-                turn_pairs.append((messages[i], messages[i + 1]))
-
-        # Generate rows with incrementally more turns
-        max_turns_for_example = len(turn_pairs)
-
-        for n_turns in range(1, max_turns_for_example + 1):
-            # Create a conversation with n_turns pairs
-            conversation = []
-            for turn_idx in range(n_turns):
-                # Add user message
-                conversation.append(turn_pairs[turn_idx][0])
-                # Add assistant response
-                conversation.append(turn_pairs[turn_idx][1])
-
-            # Add this incremental conversation as a new row
-            new_data.append(
-                {
-                    "messages": conversation,
-                    "num_turns": n_turns,  # Track how many turn pairs this row has
-                    "original_idx": dataset.indices[dataset.indices.tolist().index(example)]
-                    if hasattr(dataset, "indices")
-                    else len(new_data),
-                }
-            )
-
-    return Dataset.from_list(new_data)
-
-
-# def format_sft_dataset(ds: Dataset, max_length_chars: int) -> Dataset:
-#     rows = []
-
-#     for row in ds:
-#         prompt = row["instruction"]
-#         completion = row["response"]
-
-#         if len(prompt) + len(completion) > max_length_chars:
-#             continue
-
-#         rows.append({"prompt": prompt, "completion": completion})
-
-#     return Dataset.from_list(rows)
+    return Dataset.from_list(rows)
 
 
 def create_personaqa_dataset(folder: str) -> Dataset:
@@ -366,7 +196,7 @@ def create_personaqa_dataset(folder: str) -> Dataset:
         persona = get_persona(persona_id, persona_data)
         name = persona["name"]
 
-        prompt = f"Name: {name}."
+        prompt = f"Name: {name}.\n"
         response = datapoint["text"]
         conversation = [
             {"role": "user", "content": prompt},
@@ -393,20 +223,27 @@ def create_personaqa_dataset(folder: str) -> Dataset:
 
 if __name__ == "__main__":
     model_names = [
-        "Qwen/Qwen3-8B",
+        # "Qwen/Qwen3-8B",
         # "Qwen/Qwen3-14B",
         # "google/gemma-2-9b-it",
         # "Qwen/Qwen3-32B",
         # "google/gemma-2-27b-it",
+        "meta-llama/Llama-3.3-70B-Instruct",
     ]
 
     final_message_loss_only = True
 
     dataset_names = ["datasets/personaqa_data/shuffled"]
-    run_str = "1_epoch"
+    num_epochs = 1
+    run_str = f"{num_epochs}_epochs"
 
     for model_name, dataset_name in itertools.product(model_names, dataset_names):
         print(f"Training {model_name}")
+
+        if model_name == "meta-llama/Llama-3.3-70B-Instruct":
+            quantize = True
+        else:
+            quantize = False
 
         run_name = f"{model_name}_{dataset_name}"
         run_name = run_name.replace("/", "-")
@@ -422,7 +259,9 @@ if __name__ == "__main__":
         gc.collect()
 
         batch_size = MODEL_NAME_TO_BATCH_SIZE.get(config.model_name, 2)
-        real_batch_size = 8
+        real_batch_size = 16
+
+        assert real_batch_size % batch_size == 0, f"Real batch size {real_batch_size} must be divisible by batch size {batch_size}"
 
         sft_config = CustomSFTConfig(
             model_name=config.model_name,
@@ -431,16 +270,10 @@ if __name__ == "__main__":
         )
 
         sft_config.run_name = f"{run_name}_{run_str}"
-        sft_config.num_train_epochs = 1.0
+        sft_config.num_train_epochs = num_epochs
+        sft_config.completion_only_loss = True
 
         ds = create_personaqa_dataset(dataset_name)
-
-        if final_message_loss_only:
-            old_len = len(ds)
-            ds = create_incremental_turn_dataset(ds)
-            new_len = len(ds)
-            print(f"Old length: {old_len}, New length: {new_len}")
-            assert old_len == new_len
 
         eval_percent = 0.01
         train_size = int(len(ds) * (1 - eval_percent))
@@ -450,12 +283,8 @@ if __name__ == "__main__":
 
         tokenizer = AutoTokenizer.from_pretrained(config.model_name)
 
-        train_ds = prepare_sft_dataset(
-            train_ds, tokenizer, final_message_loss_only=final_message_loss_only
-        )
-        eval_ds = prepare_sft_dataset(
-            eval_ds, tokenizer, final_message_loss_only=final_message_loss_only
-        )
+        train_ds = format_sft_dataset(train_ds)
+        eval_ds = format_sft_dataset(eval_ds)
 
         # early_stopping_callback = EarlyStoppingCallback(early_stopping_patience=2)
 
@@ -474,7 +303,7 @@ if __name__ == "__main__":
                 # callbacks=[early_stopping_callback],
                 callbacks=[],
                 save_lora_path=lora_path,
-                quantize=False,
+                quantize=quantize,
             )
         else:
             print(f"{lora_path} already exists, skipping SFT training")
